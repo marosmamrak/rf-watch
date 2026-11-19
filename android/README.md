@@ -88,19 +88,60 @@ the same Car App Library templates. Debug builds add `androidx.car.app:app-autom
 launchable `CarAppActivity` (`app/src/debug/AndroidManifest.xml`); release builds are
 unchanged.
 
+Setup (once):
+
 ```bash
 sdkmanager "system-images;android-34-ext9;android-automotive;arm64-v8a"
 avdmanager create avd -n AAOS_API_34 -d automotive_1024p_landscape \
   -k "system-images;android-34-ext9;android-automotive;arm64-v8a"
-emulator -avd AAOS_API_34 &
-./gradlew installDebug
-adb shell am start -n com.marosmamrak.rfwatch/.MainActivity   # connect to 10.0.2.2:8787
+```
+
+Run:
+
+```bash
+# terminal 1, repo root: the node with the demo scenario on :8787
+cargo run --release
+
+# terminal 2
+$ANDROID_HOME/emulator/emulator -avd AAOS_API_34 &
+adb wait-for-device
+cd android && ./gradlew installDebug
+adb shell pm grant com.marosmamrak.rfwatch android.permission.POST_NOTIFICATIONS
+adb shell am start -n com.marosmamrak.rfwatch/.MainActivity
+```
+
+In the app, type `10.0.2.2:8787` under **Manual connection** and tap **Connect**. This starts
+the monitoring service that feeds the car screen. Then open the car screen:
+
+```bash
 adb shell am start -n com.marosmamrak.rfwatch/androidx.car.app.activity.CarAppActivity
 ```
 
-Verified: the status row switches between DRONE DETECTED and Clear live as the demo drone
-comes and goes, emitters update, and the host keeps the screen open across several minutes
-of updates (no template-limit close).
+What to check (the demo drone transmits from 8 s to 40 s of every 60 s loop;
+`curl -s localhost:8787/api/status` shows `drone_detected` for comparison):
+
+| Check | Expected |
+|---|---|
+| Car screen opens | Title **rf-watch**, a **Status** row and **Emitter** rows |
+| Drone transmitting | Status **DRONE DETECTED** (red), an emitter row *FHSS control · ~2441 MHz* |
+| Drone gone (server logs `drone control link lost` and stays clear) | Status switches to **Clear** (green), FHSS row disappears. Measured: 7–9 s on the emulator (see known issues) |
+| Live updates over 3+ loops | Screen stays open; the host does not close it for exceeding the template limit |
+| Drone alert | `adb shell dumpsys notification` lists *Drone detected · 10.0.2.2* on channel `drone_alerts`; badge on the bell icon |
+
+Last run: 19 Nov 2026, AAOS API 34 emulator, about 12 minutes of demo loops. All checks
+passed. Not covered here: the Android Auto phone app itself (see the DHU section below).
+
+Known issues found during this run:
+
+- **Car screen lags the app by several seconds.** After a real departure the app state
+  (persistent notification) says *clear* within 1–2 s, but the car screen switches 7–9 s
+  later. The screen refreshes at most once per second, so the remaining delay is between
+  `invalidate()` and the AAOS host drawing the template. Not yet investigated; check on a
+  real head unit before relying on it.
+- **Detector flaps while the drone is present.** The node logs `lost` and `detected` again
+  0.1–0.5 s apart in the middle of a flight (a few times per loop), because the FHSS rule
+  has no hysteresis. Clients see a short *clear*; alerts are not repeated because the
+  track id stays the same. Fix belongs in `src/detect.rs` (hold the detection for ~1 s).
 
 | Drone detected | Clear |
 |---|---|
@@ -108,10 +149,11 @@ of updates (no template-limit close).
 
 ## Android Auto with the Desktop Head Unit (DHU)
 
-Needs a real Android phone with Android Auto (not tested yet).
+Needs a real Android phone with Android Auto. Not tested yet: no phone was available.
 
 1. Install the DHU: `sdkmanager "extras;google;auto"`.
-2. On the phone (or the Play-enabled emulator), install Android Auto, open its settings,
+2. On the phone, install Android Auto from Play (a phone emulator won't do: Play marks
+   Android Auto as incompatible there), open its settings,
    tap **Version** ten times to unlock developer mode, then in the overflow menu choose
    **Developer settings** → enable **Unknown sources** (needed for apps not installed
    from Play) and **Start head unit server**.
