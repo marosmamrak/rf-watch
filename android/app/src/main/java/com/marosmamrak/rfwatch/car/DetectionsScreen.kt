@@ -18,28 +18,30 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.marosmamrak.rfwatch.R
 import com.marosmamrak.rfwatch.monitor.NodeRepository
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /** Live detections on the car screen; observes the same [NodeRepository] as the phone. */
 class DetectionsScreen(carContext: CarContext) : Screen(carContext) {
 
+    /** What the host is showing (or was last asked to show). */
     private var summary = CarSummary.from(NodeRepository.state.value)
 
     init {
+        // The host accepts about one template refresh per 10 s; a refresh sooner than that
+        // is held back until the next slot, and the drone alert would wait with it.
+        // So the car screen refreshes ONLY when [CarSummary.changeKey] changes (status,
+        // which emitters are listed). Levels and confidence are a snapshot from that
+        // moment; the phone shows them live. Periodic value refreshes were tried and
+        // delayed the "Clear" switch by up to 10 s whenever one landed just before it.
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                NodeRepository.state
-                    .map(CarSummary::from)
-                    .distinctUntilChanged()
-                    .collect { next ->
+                NodeRepository.state.map(CarSummary::from).collect { next ->
+                    if (next.changeKey != summary.changeKey) {
                         summary = next
                         invalidate()
-                        // StateFlow conflates while we wait: at most one template per interval.
-                        delay(REFRESH_INTERVAL_MS)
                     }
+                }
             }
         }
     }
@@ -86,7 +88,4 @@ class DetectionsScreen(carContext: CarContext) : Screen(carContext) {
             .build()
     }
 
-    private companion object {
-        const val REFRESH_INTERVAL_MS = 1_000L
-    }
 }

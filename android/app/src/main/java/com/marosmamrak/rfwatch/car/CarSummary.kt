@@ -11,8 +11,12 @@ import java.util.Locale
  * "Emitter N" rows. A ListTemplate update only counts as a *refresh* (not a new step
  * against the host's 5-template quota) when the title, the number of rows and every row
  * title stay the same, so all dynamic values live in the row texts.
+ *
+ * [changeKey] holds only what the driver must see at once: the status row and which
+ * emitters are listed (id + kind). Levels and confidence change every frame and are left
+ * out, so the screen can refresh them slowly without hitting the host's rate limit.
  */
-data class CarSummary(val title: String, val rows: List<CarRow>) {
+data class CarSummary(val title: String, val rows: List<CarRow>, val changeKey: List<Any> = emptyList()) {
 
     enum class Tone { Alert, Clear, Neutral }
 
@@ -65,7 +69,9 @@ data class CarSummary(val title: String, val rows: List<CarRow>) {
                     }
                 }
             }
-            return CarSummary(TITLE, listOf(status) + slots)
+            val key = listOf<Any>(status.tone, status.lines) + active.take(TRACK_SLOTS).map { it.id to it.kind } +
+                listOf(active.size > TRACK_SLOTS)
+            return CarSummary(TITLE, listOf(status) + slots, key)
         }
     }
 }

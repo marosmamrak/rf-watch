@@ -52,6 +52,22 @@ class CarSummaryTest {
         assertEquals(listOf("—"), rows[3].lines)
     }
 
+    /** Only changes the driver must see at once may trigger an immediate car refresh. */
+    @Test
+    fun changeKeyIgnoresLevelsButNotStatusOrEmitters() {
+        val base = CarSummary.from(live(track(1), track(2, kind = Track.KIND_WIDEBAND)))
+        val louder = CarSummary.from(live(track(1, peak = -40f), track(2, kind = Track.KIND_WIDEBAND)))
+        assertTrue(base != louder)
+        assertEquals(base.changeKey, louder.changeKey)
+
+        val droneGone = CarSummary.from(live(track(2, kind = Track.KIND_WIDEBAND)))
+        assertTrue(base.changeKey != droneGone.changeKey)
+        val newEmitter = CarSummary.from(live(track(1), track(2, kind = Track.KIND_WIDEBAND), track(3)))
+        assertTrue(base.changeKey != newEmitter.changeKey)
+        val disconnected = CarSummary.from(live(track(1)).reduce(ClientEvent.Disconnected("x")))
+        assertTrue(CarSummary.from(live(track(1))).changeKey != disconnected.changeKey)
+    }
+
     @Test
     fun overflowIsSummarisedInLastSlot() {
         val rows = CarSummary.from(live(*(1L..6L).map { track(it) }.toTypedArray())).rows

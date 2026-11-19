@@ -48,9 +48,15 @@ NsdDiscovery ──pick──▶ MonitorService (foreground, connectedDevice)
 The car host allows at most 5 templates per task. An update counts as a *refresh*, which
 does not use up that quota, only if the template title, the number of rows and every row
 title stay the same. So the car screen uses a fixed layout: constant title `rf-watch`, a
-`Status` row and `Emitter 1..4` rows. All live values go into the row texts. Updates are
-throttled to at most one per second, and only sent when the content changed.
+`Status` row and `Emitter 1..4` rows. All live values go into the row texts.
 `CarSummaryTest` checks that the layout has the same shape in every state.
+
+The host also rate-limits refreshes to about one per 10 s and holds back anything sooner
+(logcat: `Delaying template update … too many refreshes in a short span of time`). A
+1-per-second refresh therefore delayed the DRONE DETECTED / Clear switch by up to 10 s.
+The car screen now refreshes **only when the status or the list of emitters changes**
+(`CarSummary.changeKey`); levels and confidence on the car screen are a snapshot from that
+moment, the phone shows them live.
 
 ## Build
 
@@ -123,25 +129,18 @@ What to check (the demo drone transmits from 8 s to 40 s of every 60 s loop;
 | Check | Expected |
 |---|---|
 | Car screen opens | Title **rf-watch**, a **Status** row and **Emitter** rows |
-| Drone transmitting | Status **DRONE DETECTED** (red), an emitter row *FHSS control · ~2441 MHz* |
-| Drone gone (server logs `drone control link lost` and stays clear) | Status switches to **Clear** (green), FHSS row disappears. Measured: 7–9 s on the emulator (see known issues) |
-| Live updates over 3+ loops | Screen stays open; the host does not close it for exceeding the template limit |
+| Drone transmitting | Status **DRONE DETECTED** (red), an emitter row *FHSS control · ~2441 MHz*. Measured: under 1 s after the node logs `detected` |
+| Drone gone (server logs `drone control link lost` and stays clear) | Status switches to **Clear** (green), FHSS row disappears. Measured: about 1 s |
+| Over 3+ loops | Screen stays open; `adb logcat | grep 'Delaying template update'` prints nothing |
 | Drone alert | `adb shell dumpsys notification` lists *Drone detected · 10.0.2.2* on channel `drone_alerts`; badge on the bell icon |
 
-Last run: 19 Nov 2026, AAOS API 34 emulator, about 12 minutes of demo loops. All checks
-passed. Not covered here: the Android Auto phone app itself (see the DHU section below).
+Last run: 19 Nov 2026, AAOS API 34 emulator, 4 demo loops after the fixes below. All checks
+passed; the host received a new template within 0.5 s of every detected/lost on the node
+and delayed none. Not covered here: the Android Auto phone app itself (see the DHU section).
 
-Known issues found during this run:
-
-- **Car screen lags the app by several seconds.** After a real departure the app state
-  (persistent notification) says *clear* within 1–2 s, but the car screen switches 7–9 s
-  later. The screen refreshes at most once per second, so the remaining delay is between
-  `invalidate()` and the AAOS host drawing the template. Not yet investigated; check on a
-  real head unit before relying on it.
-- **Detector flaps while the drone is present.** The node logs `lost` and `detected` again
-  0.1–0.5 s apart in the middle of a flight (a few times per loop), because the FHSS rule
-  has no hysteresis. Clients see a short *clear*; alerts are not repeated because the
-  track id stays the same. Fix belongs in `src/detect.rs` (hold the detection for ~1 s).
+Two issues found during the first run are fixed: the car screen lagged 7–9 s behind the
+app because of the host's refresh rate limit (see *Car template refresh limits*), and the
+node's detector flapped lost/detected mid-flight (now with hysteresis, see the root README).
 
 | Drone detected | Clear |
 |---|---|

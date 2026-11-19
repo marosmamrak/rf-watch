@@ -25,7 +25,10 @@ the same input it would get from an `rtl_power` / HackRF sweep.
    hit rate — Wi-Fi, video downlinks.
 4. **Narrowband** bursts (≤ 2.5 MHz) are pooled over a 2 s window. ≥ 2.5 bursts per sweep
    spread over ≥ 15 distinct 1 MHz channels is reported as an **FHSS control link**;
-   isolated blips (Bluetooth, clicks) are not. Lost tracks stay listed for 10 s.
+   isolated blips (Bluetooth, clicks) are not. **Hysteresis:** once reported, the link is
+   kept while the window meets 60 % of both thresholds, and is declared lost only after 1 s
+   below that, so a weak stretch mid-flight does not flap lost/detected. Lost tracks stay
+   listed for 10 s.
 
 The `demo` scenario loops every 60 s: background traffic, a drone flies in at 8 s (signal
 rises), passes and leaves at 40 s.

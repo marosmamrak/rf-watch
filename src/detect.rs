@@ -29,6 +29,11 @@ pub struct DetectorConfig {
     pub narrow_max_mhz: f32,
     /// A wideband track is reported once its hit rate reaches this.
     pub wide_min_confidence: f32,
+    /// While an FHSS link is active, the window only has to meet this fraction of the
+    /// rate and channel thresholds to keep it (hysteresis against flapping).
+    pub fhss_release_factor: f32,
+    /// ...and it is reported lost only after this long without such a window.
+    pub fhss_release_ms: u64,
     /// Lost tracks stay listed (inactive) this long.
     pub hold_ms: u64,
 }
@@ -43,6 +48,8 @@ impl Default for DetectorConfig {
             wide_min_mhz: 8.0,
             narrow_max_mhz: 2.5,
             wide_min_confidence: 0.2,
+            fhss_release_factor: 0.6,
+            fhss_release_ms: 1_000,
             hold_ms: 10_000,
         }
     }
@@ -222,9 +229,18 @@ impl Detector {
             self.narrow.pop_front();
         }
 
+        // Hysteresis: an active link is kept while the window meets a lower bar
+        // (fhss_release_factor of the detection thresholds).
+        let holding = self.fhss.as_ref().is_some_and(|t| t.active);
+        let factor = if holding {
+            self.cfg.fhss_release_factor
+        } else {
+            1.0
+        };
         let hit = self.narrow.len() == self.cfg.window && {
             let (rate, channels, _, _, _) = self.window_stats();
-            rate >= self.cfg.fhss_min_rate && channels >= self.cfg.fhss_min_channels
+            rate >= factor * self.cfg.fhss_min_rate
+                && channels as f32 >= factor * self.cfg.fhss_min_channels as f32
         };
 
         if hit {
@@ -253,7 +269,7 @@ impl Detector {
             track.last_seen_ms = now;
             track.active = true;
         } else if let Some(track) = &mut self.fhss {
-            track.active = false;
+            track.active = now - track.last_seen_ms <= self.cfg.fhss_release_ms;
             track.confidence *= 0.95;
             if now - track.last_seen_ms > self.cfg.hold_ms {
                 self.fhss = None;
@@ -374,6 +390,24 @@ mod tests {
             for t in &r.tracks {
                 assert!((-100.0..-30.0).contains(&t.peak_dbm), "{t:?}");
             }
+        }
+    }
+
+    #[test]
+    fn detection_does_not_flap_during_a_flight() {
+        // Regression: a weak sweep window in mid-flight dropped the link for a few
+        // sweeps, so clients saw "lost" + "detected" again within half a second.
+        for seed in 1..=40 {
+            let mut sim = Simulator::new(seed, Scenario::demo(), 10);
+            let mut det = Detector::new(DetectorConfig::default());
+            let active: Vec<bool> = (0..1200)
+                .map(|_| fhss_active(&det.process(&sim.next_sweep())))
+                .collect();
+            let losses = active.windows(2).filter(|w| w[0] && !w[1]).count();
+            assert_eq!(
+                losses, 2,
+                "seed {seed}: expected one loss per 60 s loop, got {losses}"
+            );
         }
     }
 
