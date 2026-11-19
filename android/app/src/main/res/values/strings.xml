@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">rf-watch</string>
+    <string name="channel_monitor">Monitoring</string>
+    <string name="channel_monitor_desc">Ongoing connection to an rf-watch node</string>
+    <string name="channel_alerts">Drone alerts</string>
+    <string name="channel_alerts_desc">A drone control link was detected</string>
+</resources>

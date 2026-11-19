@@ -78,6 +78,26 @@ avahi-browse -r _rfwatch._tcp  # Linux
 `GET /api/status` — snapshot: device, frames processed, connected clients,
 `drone_detected`, current tracks.
 
+## Android client
+
+[`android/`](android/README.md) is a native Kotlin + Jetpack Compose client:
+
+- **Discovery** of `_rfwatch._tcp` nodes with Android NSD, plus manual `host:port`
+  (`10.0.2.2:8787` from the emulator).
+- **Node screen**: the node's own Svelte UI in a WebView, under a native status bar
+  (connection state, `DRONE DETECTED` / `clear`) driven by the `/ws` stream
+  (OkHttp WebSocket + kotlinx.serialization).
+- **Background monitoring**: a `connectedDevice` foreground service keeps the WebSocket
+  open with the screen off, reconnects with backoff and posts a notification for every new
+  active `fhss_control` track.
+- **Android Auto** (Car App Library, IOT category): live status and active emitters on the
+  car screen; alerts appear as car notifications.
+
+```bash
+cd android && ./gradlew test assembleDebug   # JDK 21, Android SDK with compileSdk 37
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
 ## Tests
 
 ```bash
@@ -86,7 +106,8 @@ cargo test                  # simulator, detector (false alarms, detection laten
 cd web && npm test && npm run check
 ```
 
-CI (`.github/workflows/ci.yml`) runs fmt, clippy, tests and both builds.
+CI (`.github/workflows/ci.yml`) runs fmt, clippy, tests and both builds, plus the Android
+unit tests, lint and debug APK.
 
 ## Layout
 
@@ -98,10 +119,9 @@ CI (`.github/workflows/ci.yml`) runs fmt, clippy, tests and both builds.
 | `src/mdns.rs` | `_rfwatch._tcp` advertisement. |
 | `src/protocol.rs` | JSON messages. |
 | `web/src/lib/` | Connection with reconnect, spectrum, waterfall, emitter list. |
+| `android/` | Android client: NSD discovery, WebView + native alerts, foreground service, Android Auto. |
 
 ## Ideas
 
 - Real input: parse `rtl_power` / `hackrf_sweep` CSV as a second sweep source.
 - 5.8 GHz band and video-downlink classification.
-- Android client: discover `_rfwatch._tcp` via NSD, stream `/ws`, show alerts and the
-  UI in a WebView, Android Auto notification.

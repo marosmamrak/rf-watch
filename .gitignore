@@ -3,3 +3,12 @@ web/node_modules/
 web/dist/
 .DS_Store
 .idea/
+# Android client
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/local.properties
+android/captures/
+*.jks
+*.keystore
