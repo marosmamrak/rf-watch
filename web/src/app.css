@@ -1,0 +1,26 @@
+:root {
+  --bg: #0b0f14;
+  --panel: #111821;
+  --panel-2: #16202b;
+  --line: #233142;
+  --text: #dbe4ee;
+  --muted: #8395a9;
+  --teal: #6ef0d2;
+  --blue: #5096ff;
+  --red: #ff5050;
+  --red-bg: #3d1111;
+  --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.4 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}

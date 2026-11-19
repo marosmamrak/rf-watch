@@ -1,0 +1,31 @@
+[package]
+name = "rf-watch"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Passive RF drone-link detector demo: simulated 2.4 GHz sweeps, FHSS detection, WebSocket stream, mDNS, embedded Svelte UI"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", features = ["ws"] }
+clap = { version = "4", features = ["derive"] }
+mdns-sd = "0.13"
+mime_guess = "2"
+rand = "0.9"
+rust-embed = "8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+futures-util = "0.3"
+tokio-tungstenite = "0.26"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+
+[profile.release]
+lto = "thin"
+strip = true
