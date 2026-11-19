@@ -49,6 +49,8 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp)
     implementation(libs.androidx.car.app)
+    // Debug only: lets the car screen run on an Android Automotive OS emulator for testing.
+    debugImplementation(libs.androidx.car.app.automotive)
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)

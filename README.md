@@ -93,6 +93,10 @@ avahi-browse -r _rfwatch._tcp  # Linux
 - **Android Auto** (Car App Library, IOT category): live status and active emitters on the
   car screen; alerts appear as car notifications.
 
+| Phone / node screen | Car screen (Android Automotive OS emulator) |
+|---|---|
+| ![Node screen](docs/screenshots/app-node-screen.png) | ![Car screen](docs/screenshots/car-drone-detected.png) |
+
 ```bash
 cd android && ./gradlew test assembleDebug   # JDK 21, Android SDK with compileSdk 37
 adb install -r app/build/outputs/apk/debug/app-debug.apk

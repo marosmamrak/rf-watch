@@ -80,7 +80,35 @@ cargo run --release            # node on :8787, advertised as _rfwatch._tcp
 The `demo` scenario brings a drone in at 8 s of every 60 s loop, so an alert follows within
 seconds. Press Home or turn the screen off and the alert still arrives.
 
+## Car screen on the Android Automotive OS emulator (tested)
+
+The Android Auto phone app can't be installed on a phone emulator (Play reports it as
+incompatible), so the car screen is tested on an **Android Automotive OS** emulator. It runs
+the same Car App Library templates. Debug builds add `androidx.car.app:app-automotive` and a
+launchable `CarAppActivity` (`app/src/debug/AndroidManifest.xml`); release builds are
+unchanged.
+
+```bash
+sdkmanager "system-images;android-34-ext9;android-automotive;arm64-v8a"
+avdmanager create avd -n AAOS_API_34 -d automotive_1024p_landscape \
+  -k "system-images;android-34-ext9;android-automotive;arm64-v8a"
+emulator -avd AAOS_API_34 &
+./gradlew installDebug
+adb shell am start -n com.marosmamrak.rfwatch/.MainActivity   # connect to 10.0.2.2:8787
+adb shell am start -n com.marosmamrak.rfwatch/androidx.car.app.activity.CarAppActivity
+```
+
+Verified: the status row switches between DRONE DETECTED and Clear live as the demo drone
+comes and goes, emitters update, and the host keeps the screen open across several minutes
+of updates (no template-limit close).
+
+| Drone detected | Clear |
+|---|---|
+| ![Car screen, drone detected](../docs/screenshots/car-drone-detected.png) | ![Car screen, clear](../docs/screenshots/car-clear.png) |
+
 ## Android Auto with the Desktop Head Unit (DHU)
+
+Needs a real Android phone with Android Auto (not tested yet).
 
 1. Install the DHU: `sdkmanager "extras;google;auto"`.
 2. On the phone (or the Play-enabled emulator), install Android Auto, open its settings,
