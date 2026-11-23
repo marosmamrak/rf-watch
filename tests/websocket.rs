@@ -1,9 +1,12 @@
 //! End to end: start the server on a free port, connect over WebSocket, expect a hello
 //! and then frames, and a drone detection with the always-on scenario.
 
+use std::sync::Arc;
+
 use futures_util::StreamExt;
 use rf_watch::detect::{Detector, DetectorConfig};
-use rf_watch::server::{AppState, app, run_scanner};
+use rf_watch::scanner::{Hub, Scanner};
+use rf_watch::server::{AppState, app};
 use rf_watch::source::SweepSource;
 use rf_watch::source::sim::{Scenario, Simulator};
 use serde_json::Value;
@@ -14,13 +17,10 @@ async fn streams_hello_then_frames_with_a_detection() {
     let fps = 50;
     let source = Simulator::new(5, Scenario::drone(), fps);
     let band = source.band();
-    let state = AppState::new("it-node", band, fps);
-    tokio::spawn(run_scanner(
-        state.clone(),
-        source,
-        Detector::new(DetectorConfig::default(), band),
-        fps,
-    ));
+    let hub = Arc::new(Hub::default());
+    let detector = Detector::new(DetectorConfig::default(), band);
+    let _scanner = Scanner::spawn(source, detector, hub.clone(), Some(Duration::from_secs(1) / fps)).unwrap();
+    let state = AppState::new("it-node", band, fps, hub);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app(state)).await.unwrap() });
