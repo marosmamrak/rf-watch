@@ -258,7 +258,12 @@ mod tests {
     fn dropping_wakes_a_waiting_scanner_at_once() {
         let hub = Arc::new(Hub::default());
         let scanner = spawn(1000, false, &hub, Some(Duration::from_secs(10)));
-        thread::sleep(Duration::from_millis(50));
+        // Wait for the first sweep; the thread then sleeps until the next one is due.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while hub.snapshot().frames == 0 {
+            assert!(Instant::now() < deadline, "no first sweep");
+            thread::sleep(Duration::from_millis(5));
+        }
         let start = Instant::now();
         drop(scanner);
         assert!(
