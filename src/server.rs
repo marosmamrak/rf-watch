@@ -15,7 +15,7 @@ use serde::Serialize;
 use tokio::sync::broadcast::{self, error::RecvError};
 use tokio::time::MissedTickBehavior;
 
-use crate::detect::{Detector, Track, TrackKind};
+use crate::detect::{Detector, Track};
 use crate::protocol::{self, ServerMsg, round_tenth};
 use crate::source::SweepSource;
 use crate::spectrum::Band;
@@ -95,10 +95,7 @@ pub async fn run_scanner(state: AppState, mut source: impl SweepSource, mut det:
             }
         };
         let report = det.process(&sweep);
-        let drone = report
-            .tracks
-            .iter()
-            .any(|t| t.kind == TrackKind::FhssControl && t.active);
+        let drone = report.drone_detected();
 
         {
             let mut st = state.status.write().expect("status lock");
