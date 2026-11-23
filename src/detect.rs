@@ -11,7 +11,7 @@ use std::collections::{BTreeSet, VecDeque};
 
 use serde::Serialize;
 
-use crate::sim::{Sweep, bin_mhz, freq_of_bin};
+use crate::spectrum::{Band, Sweep};
 
 #[derive(Debug, Clone)]
 pub struct DetectorConfig {
@@ -101,7 +101,7 @@ pub fn noise_floor(power_dbm: &[f32]) -> f32 {
     sorted[sorted.len() / 4]
 }
 
-pub fn segments(power_dbm: &[f32], threshold_dbm: f32) -> Vec<Segment> {
+pub fn segments(band: &Band, power_dbm: &[f32], threshold_dbm: f32) -> Vec<Segment> {
     let mut out = Vec::new();
     let mut start: Option<usize> = None;
     for i in 0..=power_dbm.len() {
@@ -111,8 +111,8 @@ pub fn segments(power_dbm: &[f32], threshold_dbm: f32) -> Vec<Segment> {
             (Some(s), false) => {
                 let run = &power_dbm[s..i];
                 out.push(Segment {
-                    center_mhz: (freq_of_bin(s) + freq_of_bin(i - 1)) / 2.0,
-                    width_mhz: run.len() as f32 * bin_mhz(),
+                    center_mhz: (band.freq_of_bin(s) + band.freq_of_bin(i - 1)) / 2.0,
+                    width_mhz: run.len() as f32 * band.bin_mhz(),
                     peak_dbm: run.iter().copied().fold(f32::MIN, f32::max),
                 });
                 start = None;
@@ -132,6 +132,7 @@ struct WideState {
 
 pub struct Detector {
     cfg: DetectorConfig,
+    band: Band,
     next_id: u32,
     wide: Vec<WideState>,
     fhss: Option<Track>,
@@ -140,9 +141,10 @@ pub struct Detector {
 }
 
 impl Detector {
-    pub fn new(cfg: DetectorConfig) -> Self {
+    pub fn new(cfg: DetectorConfig, band: Band) -> Self {
         Self {
             cfg,
+            band,
             next_id: 1,
             wide: Vec::new(),
             fhss: None,
@@ -154,7 +156,7 @@ impl Detector {
         let now = sweep.t_ms;
         let floor = noise_floor(&sweep.power_dbm);
         let threshold = floor + self.cfg.threshold_db;
-        let segs = segments(&sweep.power_dbm, threshold);
+        let segs = segments(&self.band, &sweep.power_dbm, threshold);
 
         self.update_wide(&segs, now);
         self.update_fhss(&segs, now);
@@ -306,12 +308,15 @@ impl Detector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sim::{Scenario, Simulator};
+    use crate::source::SweepSource;
+    use crate::source::sim::{Scenario, Simulator};
+
+    const BAND: Band = Band::ISM_2G4;
 
     fn run(scenario: Scenario, sweeps: usize) -> Vec<Report> {
         let mut sim = Simulator::new(42, scenario, 10);
-        let mut det = Detector::new(DetectorConfig::default());
-        (0..sweeps).map(|_| det.process(&sim.next_sweep())).collect()
+        let mut det = Detector::new(DetectorConfig::default(), sim.band());
+        (0..sweeps).map(|_| det.process(&sim.generate())).collect()
     }
 
     fn fhss_active(r: &Report) -> bool {
@@ -325,10 +330,10 @@ mod tests {
         let mut p = vec![-100.0; 20];
         p[3] = -50.0;
         p[10..15].fill(-60.0);
-        let segs = segments(&p, -90.0);
+        let segs = segments(&BAND, &p, -90.0);
         assert_eq!(segs.len(), 2);
-        assert!((segs[0].width_mhz - bin_mhz()).abs() < 1e-4);
-        assert!((segs[1].width_mhz - 5.0 * bin_mhz()).abs() < 1e-4);
+        assert!((segs[0].width_mhz - BAND.bin_mhz()).abs() < 1e-4);
+        assert!((segs[1].width_mhz - 5.0 * BAND.bin_mhz()).abs() < 1e-4);
         assert_eq!(segs[1].peak_dbm, -60.0);
     }
 
@@ -336,7 +341,7 @@ mod tests {
     fn segment_touching_the_band_edge_is_closed() {
         let mut p = vec![-100.0; 10];
         p[8..].fill(-50.0);
-        assert_eq!(segments(&p, -90.0).len(), 1);
+        assert_eq!(segments(&BAND, &p, -90.0).len(), 1);
     }
 
     #[test]
@@ -399,9 +404,9 @@ mod tests {
         // sweeps, so clients saw "lost" + "detected" again within half a second.
         for seed in 1..=40 {
             let mut sim = Simulator::new(seed, Scenario::demo(), 10);
-            let mut det = Detector::new(DetectorConfig::default());
+            let mut det = Detector::new(DetectorConfig::default(), sim.band());
             let active: Vec<bool> = (0..1200)
-                .map(|_| fhss_active(&det.process(&sim.next_sweep())))
+                .map(|_| fhss_active(&det.process(&sim.generate())))
                 .collect();
             let losses = active.windows(2).filter(|w| w[0] && !w[1]).count();
             assert_eq!(

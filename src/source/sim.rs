@@ -6,30 +6,14 @@
 
 use std::f32::consts::PI;
 
+use anyhow::Result;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
-pub const START_MHZ: f32 = 2400.0;
-pub const STOP_MHZ: f32 = 2483.5;
-pub const BINS: usize = 256;
+use super::SweepSource;
+use crate::spectrum::{Band, Sweep};
+
 pub const NOISE_FLOOR_DBM: f32 = -96.0;
-
-/// Width of one FFT bin in MHz.
-pub fn bin_mhz() -> f32 {
-    (STOP_MHZ - START_MHZ) / BINS as f32
-}
-
-/// Centre frequency of bin `i` in MHz.
-pub fn freq_of_bin(i: usize) -> f32 {
-    START_MHZ + (i as f32 + 0.5) * bin_mhz()
-}
-
-/// One sweep across the band, power per bin in dBm.
-#[derive(Debug, Clone)]
-pub struct Sweep {
-    pub t_ms: u64,
-    pub power_dbm: Vec<f32>,
-}
 
 /// What the simulated environment contains.
 #[derive(Debug, Clone)]
@@ -97,6 +81,7 @@ pub const HOP_CHANNELS: u32 = 50;
 pub const HOPS_PER_SWEEP: u32 = 4;
 
 pub struct Simulator {
+    band: Band,
     rng: StdRng,
     scenario: Scenario,
     frame: u64,
@@ -106,6 +91,7 @@ pub struct Simulator {
 impl Simulator {
     pub fn new(seed: u64, scenario: Scenario, fps: u32) -> Self {
         Self {
+            band: Band::ISM_2G4,
             rng: StdRng::seed_from_u64(seed),
             scenario,
             frame: 0,
@@ -121,25 +107,27 @@ impl Simulator {
         })
     }
 
-    pub fn next_sweep(&mut self) -> Sweep {
+    /// Generates the next sweep; simulated time advances by one frame per call.
+    pub fn generate(&mut self) -> Sweep {
         let t_ms = self.frame * self.frame_ms;
         self.frame += 1;
         let t = t_ms as f32 / 1000.0;
 
         // Sum signals in linear power (mW), convert back to dBm at the end.
-        let mut lin: Vec<f32> = (0..BINS)
+        let band = self.band;
+        let mut lin: Vec<f32> = (0..band.bins)
             .map(|_| dbm_to_mw(NOISE_FLOOR_DBM + 1.2 * self.gauss()))
             .collect();
 
         if self.scenario.wifi && self.rng.random_bool(0.45) {
             let level = -62.0 + 2.0 * self.gauss();
-            add_signal(&mut lin, 2437.0, 18.0, level);
+            add_signal(&band, &mut lin, 2437.0, 18.0, level);
         }
 
         if self.scenario.blips && self.rng.random_bool(0.35) {
             let f = self.rng.random_range(2402.0..2481.0);
             let level = self.rng.random_range(-82.0..-72.0);
-            add_signal(&mut lin, f, 1.0, level);
+            add_signal(&band, &mut lin, f, 1.0, level);
         }
 
         if self.drone_on_air(t) {
@@ -154,7 +142,7 @@ impl Simulator {
                 let ch = self.rng.random_range(0..HOP_CHANNELS);
                 let f = 2405.0 + ch as f32 * 1.5;
                 let burst = level + 2.0 * self.gauss();
-                add_signal(&mut lin, f, 1.0, burst);
+                add_signal(&band, &mut lin, f, 1.0, burst);
             }
         }
 
@@ -172,11 +160,21 @@ impl Simulator {
     }
 }
 
+impl SweepSource for Simulator {
+    fn band(&self) -> Band {
+        self.band
+    }
+
+    fn next_sweep(&mut self) -> Result<Option<Sweep>> {
+        Ok(Some(self.generate()))
+    }
+}
+
 /// Adds a flat-topped signal of `width_mhz` with steep skirts at `center_mhz`.
-fn add_signal(lin: &mut [f32], center_mhz: f32, width_mhz: f32, level_dbm: f32) {
-    let bin = bin_mhz();
+fn add_signal(band: &Band, lin: &mut [f32], center_mhz: f32, width_mhz: f32, level_dbm: f32) {
+    let bin = band.bin_mhz();
     for (i, p) in lin.iter_mut().enumerate() {
-        let d = (freq_of_bin(i) - center_mhz).abs() - width_mhz / 2.0;
+        let d = (band.freq_of_bin(i) - center_mhz).abs() - width_mhz / 2.0;
         let dbm = if d <= 0.0 {
             level_dbm
         } else if d < 3.0 * bin {
@@ -203,19 +201,17 @@ mod tests {
     #[test]
     fn sweeps_have_the_band_and_advance_in_time() {
         let mut sim = Simulator::new(1, Scenario::demo(), 10);
-        let a = sim.next_sweep();
-        let b = sim.next_sweep();
-        assert_eq!(a.power_dbm.len(), BINS);
+        let a = sim.generate();
+        let b = sim.generate();
+        assert_eq!(a.power_dbm.len(), sim.band().bins);
         assert_eq!(b.t_ms - a.t_ms, 100);
-        assert!((freq_of_bin(0) - START_MHZ).abs() < 1.0);
-        assert!((freq_of_bin(BINS - 1) - STOP_MHZ).abs() < 1.0);
     }
 
     #[test]
     fn noise_only_stays_near_the_floor() {
         let mut sim = Simulator::new(2, Scenario::noise_only(), 10);
         for _ in 0..50 {
-            let s = sim.next_sweep();
+            let s = sim.generate();
             let max = s.power_dbm.iter().copied().fold(f32::MIN, f32::max);
             assert!(max < NOISE_FLOOR_DBM + 8.0, "max {max}");
         }
@@ -235,7 +231,7 @@ mod tests {
         let mut a = Simulator::new(7, Scenario::demo(), 10);
         let mut b = Simulator::new(7, Scenario::demo(), 10);
         for _ in 0..5 {
-            assert_eq!(a.next_sweep().power_dbm, b.next_sweep().power_dbm);
+            assert_eq!(a.generate(), b.generate());
         }
     }
 }

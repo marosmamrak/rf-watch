@@ -16,8 +16,9 @@ use tokio::sync::broadcast::{self, error::RecvError};
 use tokio::time::MissedTickBehavior;
 
 use crate::detect::{Detector, Track, TrackKind};
-use crate::protocol::{Band, ServerMsg, round_tenth};
-use crate::sim::{BINS, START_MHZ, STOP_MHZ, Simulator};
+use crate::protocol::{self, ServerMsg, round_tenth};
+use crate::source::SweepSource;
+use crate::spectrum::Band;
 
 #[derive(RustEmbed)]
 #[folder = "web/dist/"]
@@ -42,15 +43,15 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(device: &str, fps: u32) -> Self {
+    pub fn new(device: &str, band: Band, fps: u32) -> Self {
         let version = env!("CARGO_PKG_VERSION");
         let hello = ServerMsg::Hello {
             device: device.to_owned(),
             version: version.to_owned(),
-            band: Band {
-                start_mhz: START_MHZ,
-                stop_mhz: STOP_MHZ,
-                bins: BINS,
+            band: protocol::Band {
+                start_mhz: band.start_mhz,
+                stop_mhz: band.stop_mhz,
+                bins: band.bins,
                 fps,
             },
         };
@@ -75,14 +76,24 @@ pub fn app(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Runs sweep → detect → broadcast at `fps` until the task is dropped.
-pub async fn run_scanner(state: AppState, mut sim: Simulator, mut det: Detector, fps: u32) {
+/// Runs sweep → detect → broadcast at `fps` until the task is dropped or the source ends.
+pub async fn run_scanner(state: AppState, mut source: impl SweepSource, mut det: Detector, fps: u32) {
     let mut tick = tokio::time::interval(Duration::from_millis(1000 / u64::from(fps.max(1))));
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut seq = 0u64;
     loop {
         tick.tick().await;
-        let sweep = sim.next_sweep();
+        let sweep = match source.next_sweep() {
+            Ok(Some(sweep)) => sweep,
+            Ok(None) => {
+                tracing::info!("sweep source finished");
+                return;
+            }
+            Err(e) => {
+                tracing::error!("sweep source failed: {e:#}");
+                return;
+            }
+        };
         let report = det.process(&sweep);
         let drone = report
             .tracks
@@ -186,7 +197,7 @@ mod tests {
 
     #[tokio::test]
     async fn status_reports_device() {
-        let state = AppState::new("test-node", 10);
+        let state = AppState::new("test-node", Band::ISM_2G4, 10);
         let res = app(state)
             .oneshot(Request::get("/api/status").body(Body::empty()).unwrap())
             .await
@@ -200,7 +211,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_asset_is_404() {
-        let res = app(AppState::new("t", 10))
+        let res = app(AppState::new("t", Band::ISM_2G4, 10))
             .oneshot(Request::get("/nope.js").body(Body::empty()).unwrap())
             .await
             .unwrap();
