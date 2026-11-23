@@ -1,8 +1,11 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use rf_watch::detect::{Detector, DetectorConfig};
+use rf_watch::scanner::{Hub, Scanner};
 use rf_watch::source::SweepSource;
 use rf_watch::source::sim::{Scenario, Simulator};
 use rf_watch::{mdns, server};
@@ -59,11 +62,14 @@ async fn main() -> Result<()> {
             .map_or(0, |d| d.as_nanos() as u64)
     });
 
-    let source = Simulator::new(seed, scenario, args.fps);
+    let fps = args.fps.max(1);
+    let source = Simulator::new(seed, scenario, fps);
     let band = source.band();
-    let state = server::AppState::new(&args.name, band, args.fps);
-    let det = Detector::new(DetectorConfig::default(), band);
-    tokio::spawn(server::run_scanner(state.clone(), source, det, args.fps));
+    let hub = Arc::new(Hub::default());
+    let detector = Detector::new(DetectorConfig::default(), band);
+    let pace = Duration::from_secs(1) / fps;
+    let scanner = Scanner::spawn(source, detector, hub.clone(), Some(pace))?;
+    let state = server::AppState::new(&args.name, band, fps, hub);
 
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
     let port = listener.local_addr()?.port();
@@ -89,5 +95,6 @@ async fn main() -> Result<()> {
             let _ = tokio::signal::ctrl_c().await;
         })
         .await?;
+    drop(scanner);
     Ok(())
 }
