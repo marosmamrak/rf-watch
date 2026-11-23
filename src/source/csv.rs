@@ -14,7 +14,10 @@
 //! capture bin centred in it, so a narrow burst is not averaged away, or else the capture
 //! bin covering its centre (captures coarser than the band). Bins the capture does not
 //! cover get the median of the covered ones, so they never cross the detection threshold.
-//! Sweep times come from the file, relative to the first sweep.
+//!
+//! Sweep times come from the file, relative to the first sweep. A recording that stops
+//! mid-sweep or mid-line (an interrupted `hackrf_sweep`) ends the replay quietly; damage
+//! anywhere else is an error naming the line.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -31,9 +34,11 @@ pub struct CsvReplay<R> {
     line_no: usize,
     /// First line of the next sweep, read while finishing the previous one.
     pending: Option<Line>,
-    /// Absolute time of the first sweep and the latest `t_ms` handed out.
-    start_ms: Option<i64>,
+    /// Recorded time of the previous sweep; `None` before the first.
+    last_abs_ms: Option<i64>,
     last_t_ms: u64,
+    /// Interval between the previous two sweeps, to bridge a clock that steps back.
+    last_step_ms: u64,
 }
 
 impl CsvReplay<BufReader<File>> {
@@ -50,8 +55,9 @@ impl<R: BufRead> CsvReplay<R> {
             band,
             line_no: 0,
             pending: None,
-            start_ms: None,
+            last_abs_ms: None,
             last_t_ms: 0,
+            last_step_ms: 0,
         }
     }
 
@@ -67,9 +73,15 @@ impl<R: BufRead> CsvReplay<R> {
             if text.is_empty() || text.starts_with('#') {
                 continue;
             }
-            return Line::parse(text)
-                .map(Some)
-                .with_context(|| format!("line {}", self.line_no));
+            return match Line::parse(text, self.line_no) {
+                Ok(line) => Ok(Some(line)),
+                // No newline: the recording was cut off while writing this line.
+                Err(e) if !buf.ends_with('\n') => {
+                    tracing::warn!(line = self.line_no, "ignoring the truncated last line: {e:#}");
+                    Ok(None)
+                }
+                Err(e) => Err(e.context(format!("line {}", self.line_no))),
+            };
         }
     }
 
@@ -93,10 +105,22 @@ impl<R: BufRead> CsvReplay<R> {
         Ok(Some(lines))
     }
 
+    /// Time since the first sweep, advanced by the recorded interval between sweeps. When
+    /// the recording clock steps back (DST, an NTP correction, concatenated captures),
+    /// time keeps moving at the previous interval, so tracks still age.
     fn t_ms(&mut self, abs_ms: i64) -> u64 {
-        let start = *self.start_ms.get_or_insert(abs_ms);
-        // Never backwards, even if the recording clock was.
-        self.last_t_ms = self.last_t_ms.max((abs_ms - start).max(0) as u64);
+        if let Some(prev) = self.last_abs_ms {
+            if abs_ms >= prev {
+                let step = (abs_ms - prev) as u64;
+                if step > 0 {
+                    self.last_step_ms = step;
+                }
+                self.last_t_ms += step;
+            } else {
+                self.last_t_ms += self.last_step_ms;
+            }
+        }
+        self.last_abs_ms = Some(abs_ms);
         self.last_t_ms
     }
 }
@@ -107,12 +131,24 @@ impl<R: BufRead + Send> SweepSource for CsvReplay<R> {
     }
 
     fn next_sweep(&mut self) -> Result<Option<Sweep>> {
-        let first_line_no = self.line_no + 1;
         let Some(lines) = self.next_lines()? else {
             return Ok(None);
         };
-        let power_dbm = resample(&self.band, &lines)
-            .with_context(|| format!("sweep starting near line {first_line_no}"))?;
+        let last_in_file = self.pending.is_none();
+        let started = self.last_abs_ms.is_some();
+        let power_dbm = match resample(&self.band, &lines) {
+            Ok(p) => p,
+            // The recording stopped before this sweep reached the band, e.g. `hackrf_sweep`
+            // over a wider range, interrupted.
+            Err(e) if last_in_file && started => {
+                tracing::warn!(
+                    line = lines[0].line_no,
+                    "ignoring the incomplete last sweep: {e:#}"
+                );
+                return Ok(None);
+            }
+            Err(e) => return Err(e.context(format!("sweep starting at line {}", lines[0].line_no))),
+        };
         let t_ms = self.t_ms(lines[0].abs_ms);
         Ok(Some(Sweep { t_ms, power_dbm }))
     }
@@ -121,6 +157,7 @@ impl<R: BufRead + Send> SweepSource for CsvReplay<R> {
 /// One CSV line: a slice of the spectrum.
 #[derive(Debug, Clone, PartialEq)]
 struct Line {
+    line_no: usize,
     /// Milliseconds since 1970-01-01 of the line's date and time (no time zone).
     abs_ms: i64,
     hz_low: f64,
@@ -129,7 +166,7 @@ struct Line {
 }
 
 impl Line {
-    fn parse(text: &str) -> Result<Self> {
+    fn parse(text: &str, line_no: usize) -> Result<Self> {
         let fields: Vec<&str> = text.split(',').map(str::trim).collect();
         ensure!(
             fields.len() >= 7,
@@ -138,9 +175,11 @@ impl Line {
             fields.len()
         );
         let number = |i: usize, name: &str| -> Result<f64> {
-            fields[i]
+            let v: f64 = fields[i]
                 .parse()
-                .with_context(|| format!("{name} is not a number: {:?}", fields[i]))
+                .with_context(|| format!("{name} is not a number: {:?}", fields[i]))?;
+            ensure!(v.is_finite(), "{name} is not finite: {:?}", fields[i]);
+            Ok(v)
         };
         let hz_bin_width = number(4, "hz_bin_width")?;
         ensure!(hz_bin_width > 0.0, "hz_bin_width must be positive");
@@ -152,6 +191,7 @@ impl Line {
             })
             .collect::<Result<_>>()?;
         Ok(Self {
+            line_no,
             abs_ms: parse_date(fields[0])? * 86_400_000 + parse_time(fields[1])?,
             hz_low: number(2, "hz_low")?,
             hz_bin_width,
@@ -214,7 +254,7 @@ fn parse_date(s: &str) -> Result<i64> {
     };
     let (y, m, d): (i64, i64, i64) = (y.parse()?, m.parse()?, d.parse()?);
     ensure!(
-        (1..=12).contains(&m) && (1..=31).contains(&d),
+        (1..=9999).contains(&y) && (1..=12).contains(&m) && (1..=31).contains(&d),
         "date out of range: {s:?}"
     );
     Ok(days_from_civil(y, m, d))
@@ -226,13 +266,14 @@ fn parse_time(s: &str) -> Result<i64> {
     let [h, m, sec] = parts[..] else {
         bail!("time is not HH:MM:SS: {s:?}")
     };
-    let (h, m): (i64, i64) = (h.parse()?, m.parse()?);
+    // Unsigned, so a sign is rejected.
+    let (h, m): (u32, u32) = (h.parse()?, m.parse()?);
     let sec: f64 = sec.parse().with_context(|| format!("seconds: {sec:?}"))?;
     ensure!(
         h < 24 && m < 60 && (0.0..61.0).contains(&sec),
         "time out of range: {s:?}"
     );
-    Ok((h * 3600 + m * 60) * 1000 + (sec * 1000.0).round() as i64)
+    Ok(i64::from(h * 3600 + m * 60) * 1000 + (sec * 1000.0).round() as i64)
 }
 
 /// Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant's algorithm).
@@ -362,6 +403,57 @@ mod tests {
         let csv = line("12:00:00", 5_725_000_000, 1_000_000, 100, -95.0, &[]);
         let err = format!("{:#}", sweeps(&csv).unwrap_err());
         assert!(err.contains("no data inside"), "{err}");
+    }
+
+    #[test]
+    fn time_keeps_moving_when_the_recording_clock_steps_back() {
+        // DST fall-back between the second and third sweep.
+        let csv: String = ["02:59:59.800", "02:59:59.900", "02:00:00.000", "02:00:00.100"]
+            .iter()
+            .map(|t| line(t, 2_400_000_000, 1_000_000, 84, -95.0, &[]))
+            .collect();
+        let t: Vec<u64> = sweeps(&csv).unwrap().iter().map(|s| s.t_ms).collect();
+        assert_eq!(t, [0, 100, 200, 300]);
+    }
+
+    #[test]
+    fn an_interrupted_recording_ends_quietly() {
+        // A sweep over 2300–2500 MHz, the second one cut off before reaching the band...
+        let mut csv = String::new();
+        for low in [2_300, 2_340, 2_380, 2_420, 2_460] {
+            csv += &line("12:00:00", low * 1_000_000, 1_000_000, 40, -95.0, &[]);
+        }
+        csv += &line("12:00:01", 2_300_000_000, 1_000_000, 40, -95.0, &[]);
+        assert_eq!(sweeps(&csv).unwrap().len(), 1);
+
+        // ...or in the middle of writing a line.
+        csv.truncate(csv.len() - 20);
+        assert_eq!(sweeps(&csv).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn errors_point_at_the_first_line_of_the_sweep() {
+        // Line 2 starts below line 1, so it begins sweep 2 (read ahead while closing sweep
+        // 1); line 3 starts lower still and begins sweep 3. Sweep 2 has no data in the band.
+        let csv = line("12:00:00", 2_400_000_000, 1_000_000, 84, -95.0, &[])
+            + &line("12:00:01", 1_000_000_000, 1_000_000, 84, -95.0, &[])
+            + &line("12:00:02", 900_000_000, 1_000_000, 84, -95.0, &[]);
+        let err = format!("{:#}", sweeps(&csv).unwrap_err());
+        assert!(err.starts_with("sweep starting at line 2:"), "{err}");
+    }
+
+    #[test]
+    fn implausible_fields_are_rejected() {
+        let ok = line("12:00:00", 2_400_000_000, 1_000_000, 84, -95.0, &[]);
+        for bad in [
+            ok.replace("12:00:00", "-3:00:00"),
+            ok.replace("2026-11-19", "99999999999999-01-01"),
+            ok.replace(", 2400000000,", ", nan,"),
+            ok.replace("1000000.00", "inf"),
+        ] {
+            let err = format!("{:#}", sweeps(&(bad.clone() + &ok)).unwrap_err());
+            assert!(err.starts_with("line 1:"), "{bad} → {err}");
+        }
     }
 
     #[test]
