@@ -1,0 +1,31 @@
+{
+  "device": "rf-watch",
+  "version": "0.1.0",
+  "frames": 813,
+  "clients": 2,
+  "drone_detected": true,
+  "tracks": [
+    {
+      "id": 3,
+      "kind": "fhss_control",
+      "center_mhz": 2441.8,
+      "bandwidth_mhz": 72.0,
+      "peak_dbm": -61.2,
+      "confidence": 0.9,
+      "first_seen_ms": 10100,
+      "last_seen_ms": 81200,
+      "active": true
+    },
+    {
+      "id": 1,
+      "kind": "wideband",
+      "center_mhz": 2437.1,
+      "bandwidth_mhz": 19.4,
+      "peak_dbm": -62.4,
+      "confidence": 0.45,
+      "first_seen_ms": 200,
+      "last_seen_ms": 79900,
+      "active": false
+    }
+  ]
+}

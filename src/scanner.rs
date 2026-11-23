@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, watch};
 
 use crate::detect::{Detector, Report, Track};
-use crate::protocol::{ServerMsg, round_tenth};
+use crate::protocol::{Frame, ServerMsg};
 use crate::source::SweepSource;
 use crate::spectrum::Sweep;
 
@@ -66,14 +66,7 @@ impl Hub {
             tracing::info!("drone control link lost");
         }
 
-        let msg = ServerMsg::Frame {
-            seq,
-            t_ms: sweep.t_ms,
-            noise_floor_dbm: round_tenth(report.noise_floor_dbm),
-            threshold_dbm: round_tenth(report.threshold_dbm),
-            power_dbm: sweep.power_dbm.iter().copied().map(round_tenth).collect(),
-            tracks: report.tracks.clone(),
-        };
+        let msg = ServerMsg::Frame(Frame::new(seq, sweep, &report));
         let json = serde_json::to_string(&msg).expect("frame serializes");
         self.snapshot.send_replace(Snapshot {
             frames: seq + 1,

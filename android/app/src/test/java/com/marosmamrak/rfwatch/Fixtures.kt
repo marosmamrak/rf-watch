@@ -2,10 +2,16 @@ package com.marosmamrak.rfwatch
 
 import com.marosmamrak.rfwatch.model.Track
 
-/** Messages in the exact shape the Rust server sends (see README "Protocol"). */
+/**
+ * Messages in the shape the node sends. [resource] reads the node's own samples
+ * (the JSON files in `protocol/`); the builders make variations of them, and [ProtocolContractTest]
+ * checks that the builders keep the node's keys.
+ */
 object Fixtures {
-    const val HELLO =
-        """{"type":"hello","device":"rf-watch","version":"0.1.0","band":{"start_mhz":2400.0,"stop_mhz":2483.5,"bins":256,"fps":10}}"""
+    fun resource(name: String): String =
+        checkNotNull(Fixtures::class.java.getResource("/$name")) { "missing test resource $name" }.readText()
+
+    val HELLO = resource("hello.json")
 
     fun frame(seq: Long, vararg tracks: String) =
         """{"type":"frame","seq":$seq,"t_ms":${seq * 100},"noise_floor_dbm":-96.8,"threshold_dbm":-86.8,""" +
