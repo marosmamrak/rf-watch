@@ -10,22 +10,10 @@ use axum::Router;
 use axum::extract::State;
 use axum::response::Json;
 use axum::routing::get;
-use serde::Serialize;
 
-use crate::detect::Track;
-use crate::protocol::{self, ServerMsg};
+use crate::protocol::{self, Hello, ServerMsg, Status};
 use crate::scanner::Hub;
 use crate::spectrum::Band;
-
-#[derive(Debug, Clone, Serialize)]
-pub struct Status {
-    pub device: String,
-    pub version: String,
-    pub frames: u64,
-    pub clients: usize,
-    pub drone_detected: bool,
-    pub tracks: Vec<Track>,
-}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -39,16 +27,11 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 impl AppState {
     pub fn new(device: &str, band: Band, fps: u32, hub: Arc<Hub>) -> Self {
-        let hello = ServerMsg::Hello {
+        let hello = ServerMsg::Hello(Hello {
             device: device.to_owned(),
             version: VERSION.to_owned(),
-            band: protocol::Band {
-                start_mhz: band.start_mhz,
-                stop_mhz: band.stop_mhz,
-                bins: band.bins,
-                fps,
-            },
-        };
+            band: protocol::Band::new(&band, fps),
+        });
         Self {
             device: device.into(),
             hub,
@@ -73,7 +56,7 @@ async fn status(State(state): State<AppState>) -> Json<Status> {
         frames: snap.frames,
         clients: state.hub.clients(),
         drone_detected: snap.drone_detected,
-        tracks: snap.tracks,
+        tracks: snap.tracks.iter().map(protocol::Track::from).collect(),
     })
 }
 

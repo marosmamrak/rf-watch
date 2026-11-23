@@ -1,0 +1,11 @@
+{
+  "type": "hello",
+  "device": "rf-watch",
+  "version": "0.1.0",
+  "band": {
+    "start_mhz": 2400.0,
+    "stop_mhz": 2483.5,
+    "bins": 256,
+    "fps": 10
+  }
+}

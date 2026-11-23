@@ -1,49 +1,16 @@
-// Mirrors src/protocol.rs and src/detect.rs.
+// The wire types are generated from src/protocol.rs (protocol.gen.ts); this module adds
+// parsing and labels on top.
+import type { ServerMsg, TrackKind } from './protocol.gen';
 
-export interface Band {
-  start_mhz: number;
-  stop_mhz: number;
-  bins: number;
-  fps: number;
-}
+export type * from './protocol.gen';
 
-export type TrackKind = 'fhss_control' | 'wideband';
+const MESSAGE_TYPES: ReadonlySet<unknown> = new Set<ServerMsg['type']>(['hello', 'frame']);
 
-export interface Track {
-  id: number;
-  kind: TrackKind;
-  center_mhz: number;
-  bandwidth_mhz: number;
-  peak_dbm: number;
-  confidence: number;
-  first_seen_ms: number;
-  last_seen_ms: number;
-  active: boolean;
-}
-
-export interface Hello {
-  type: 'hello';
-  device: string;
-  version: string;
-  band: Band;
-}
-
-export interface Frame {
-  type: 'frame';
-  seq: number;
-  t_ms: number;
-  noise_floor_dbm: number;
-  threshold_dbm: number;
-  power_dbm: number[];
-  tracks: Track[];
-}
-
-export type ServerMsg = Hello | Frame;
-
+/** Parses one WebSocket text message; `null` for malformed or unknown messages. */
 export function parseMsg(data: string): ServerMsg | null {
   try {
     const msg = JSON.parse(data);
-    return msg && (msg.type === 'hello' || msg.type === 'frame') ? (msg as ServerMsg) : null;
+    return msg && MESSAGE_TYPES.has(msg.type) ? (msg as ServerMsg) : null;
   } catch {
     return null;
   }

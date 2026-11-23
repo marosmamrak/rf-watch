@@ -13,8 +13,6 @@ mod fhss;
 mod segment;
 mod wideband;
 
-use serde::Serialize;
-
 pub use self::fhss::FhssConfig;
 use self::fhss::FhssDetector;
 pub use self::segment::{Segment, noise_floor, segments};
@@ -43,8 +41,7 @@ impl Default for DetectorConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackKind {
     /// Frequency-hopping remote-control link (typical for drones).
     FhssControl,
@@ -52,7 +49,7 @@ pub enum TrackKind {
     Wideband,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Track {
     pub id: u32,
     pub kind: TrackKind,
