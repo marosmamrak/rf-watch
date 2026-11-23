@@ -1,10 +1,10 @@
 //! Detection on power-spectrum sweeps.
 //!
-//! 1. [`segment`]: estimate the noise floor (25th percentile of the sweep), set the
+//! 1. `segment.rs`: estimate the noise floor (25th percentile of the sweep), set the
 //!    threshold above it and split the sweep into runs of bins above the threshold.
-//! 2. [`wideband`]: wide segments are tracked one by one by centre frequency (Wi-Fi,
+//! 2. `wideband.rs`: wide segments are tracked one by one by centre frequency (Wi-Fi,
 //!    video downlinks).
-//! 3. [`fhss`]: narrow segments are pooled over a sliding window to recognise a
+//! 3. `fhss.rs`: narrow segments are pooled over a sliding window to recognise a
 //!    frequency-hopping remote-control link.
 //!
 //! [`Detector`] runs the three steps and merges the tracks into a [`Report`].
