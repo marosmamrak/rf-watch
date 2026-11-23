@@ -65,7 +65,11 @@ impl<R: BufRead> CsvReplay<R> {
         let mut buf = String::new();
         loop {
             buf.clear();
-            if self.reader.read_line(&mut buf)? == 0 {
+            let read = self
+                .reader
+                .read_line(&mut buf)
+                .with_context(|| format!("line {}", self.line_no + 1))?;
+            if read == 0 {
                 return Ok(None);
             }
             self.line_no += 1;
@@ -440,6 +444,15 @@ mod tests {
             + &line("12:00:02", 900_000_000, 1_000_000, 84, -95.0, &[]);
         let err = format!("{:#}", sweeps(&csv).unwrap_err());
         assert!(err.starts_with("sweep starting at line 2:"), "{err}");
+    }
+
+    #[test]
+    fn an_unreadable_line_is_named() {
+        let mut bytes = line("12:00:00", 2_400_000_000, 1_000_000, 84, -95.0, &[]).into_bytes();
+        bytes.extend_from_slice(b"2026-11-19, 12:00:01, \xff\n");
+        let mut r = CsvReplay::new(bytes.as_slice(), BAND);
+        let err = format!("{:#}", r.next_sweep().unwrap_err());
+        assert!(err.starts_with("line 2:"), "{err}");
     }
 
     #[test]
