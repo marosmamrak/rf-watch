@@ -58,7 +58,7 @@
 </main>
 
 <footer class="muted">
-  Simulated 2.4 GHz sweeps · {conn.frame ? `sweep #${conn.frame.seq} · floor ${conn.frame.noise_floor_dbm.toFixed(1)} dBm` : 'waiting for data'}
+  {conn.band ? `${conn.band.start_mhz}–${conn.band.stop_mhz} MHz sweeps · ` : ''}{conn.frame ? `sweep #${conn.frame.seq} · floor ${conn.frame.noise_floor_dbm.toFixed(1)} dBm` : 'waiting for data'}
 </footer>
 
 <style>

@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -7,7 +8,9 @@ use clap::{Parser, ValueEnum};
 use rf_watch::detect::{Detector, DetectorConfig};
 use rf_watch::scanner::{Hub, Scanner};
 use rf_watch::source::SweepSource;
+use rf_watch::source::csv::CsvReplay;
 use rf_watch::source::sim::{Scenario, Simulator};
+use rf_watch::spectrum::Band;
 use rf_watch::{mdns, server};
 use tracing_subscriber::EnvFilter;
 
@@ -42,6 +45,10 @@ struct Args {
     /// Do not advertise over mDNS
     #[arg(long)]
     no_mdns: bool,
+    /// Replay a `hackrf_sweep` / `rtl_power` CSV capture of the 2.4 GHz band instead of
+    /// simulating, at --fps sweeps per second
+    #[arg(long, value_name = "CSV", conflicts_with_all = ["scenario", "seed"])]
+    input: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -51,19 +58,14 @@ async fn main() -> Result<()> {
         .init();
     let args = Args::parse();
 
-    let scenario = match args.scenario {
-        ScenarioArg::Demo => Scenario::demo(),
-        ScenarioArg::Quiet => Scenario::quiet(),
-        ScenarioArg::Drone => Scenario::drone(),
-    };
-    let seed = args.seed.unwrap_or_else(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos() as u64)
-    });
-
     let fps = args.fps.max(1);
-    let source = Simulator::new(seed, scenario, fps);
+    let source: Box<dyn SweepSource> = match &args.input {
+        Some(path) => {
+            tracing::info!(file = %path.display(), "replaying capture");
+            Box::new(CsvReplay::open(path, Band::ISM_2G4)?)
+        }
+        None => Box::new(simulator(&args, fps)),
+    };
     let band = source.band();
     let hub = Arc::new(Hub::default());
     let detector = Detector::new(DetectorConfig::default(), band);
@@ -97,4 +99,18 @@ async fn main() -> Result<()> {
         .await?;
     drop(scanner);
     Ok(())
+}
+
+fn simulator(args: &Args, fps: u32) -> Simulator {
+    let scenario = match args.scenario {
+        ScenarioArg::Demo => Scenario::demo(),
+        ScenarioArg::Quiet => Scenario::quiet(),
+        ScenarioArg::Drone => Scenario::drone(),
+    };
+    let seed = args.seed.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64)
+    });
+    Simulator::new(seed, scenario, fps)
 }
