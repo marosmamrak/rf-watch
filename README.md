@@ -67,8 +67,10 @@ cargo run --release -- --input capture.csv
 `--fps`. Lines are grouped into sweeps by frequency (a line starting at or below the first
 frequency of the current sweep begins the next one, so `hackrf_sweep`'s interleaved
 slices work), each sweep is resampled onto the 2.4 GHz band (strongest capture bin per
-band bin; uncovered bins get the sweep's median), and sweep times come from the file.
-When the file ends, the node keeps serving the last state.
+band bin; uncovered bins get the sweep's median), and sweep times come from the file
+(if the recording clock steps back, time keeps moving). A recording cut off mid-sweep or
+mid-line just ends. The node exits when the file ends; a capture it cannot read (another
+band, a damaged line) stops it with an error naming the line and exit code 1.
 
 UI development with hot reload (proxies `/ws` and `/api` to the Rust server on :8787):
 

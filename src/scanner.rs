@@ -5,11 +5,12 @@
 //! frames for WebSocket clients and a watch channel with the latest [`Snapshot`].
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use tokio::sync::{broadcast, watch};
+use anyhow::{Result, anyhow};
+use tokio::sync::{broadcast, oneshot, watch};
 
 use crate::detect::{Detector, Report, Track};
 use crate::protocol::{Frame, ServerMsg};
@@ -80,8 +81,10 @@ impl Hub {
 
 /// The running pipeline. Dropping it stops the thread and waits for it.
 pub struct Scanner {
-    stop: Arc<AtomicBool>,
+    /// Dropping the sender wakes the thread and stops it; nothing is ever sent.
+    stop: Option<mpsc::Sender<()>>,
     thread: Option<JoinHandle<()>>,
+    outcome: Option<oneshot::Receiver<Result<()>>>,
 }
 
 impl Scanner {
@@ -94,60 +97,70 @@ impl Scanner {
         hub: Arc<Hub>,
         pace: Option<Duration>,
     ) -> std::io::Result<Self> {
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread = thread::Builder::new().name("scanner".into()).spawn({
-            let stop = stop.clone();
-            move || run(source, detector, &hub, pace, &stop)
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let (outcome_tx, outcome_rx) = oneshot::channel();
+        let thread = thread::Builder::new().name("scanner".into()).spawn(move || {
+            let _ = outcome_tx.send(run(source, detector, &hub, pace, &stop_rx));
         })?;
         Ok(Self {
-            stop,
+            stop: Some(stop_tx),
             thread: Some(thread),
+            outcome: Some(outcome_rx),
         })
     }
 
-    /// Whether the pipeline ended on its own (source exhausted or failed).
-    pub fn is_finished(&self) -> bool {
-        self.thread.as_ref().is_none_or(JoinHandle::is_finished)
+    /// Resolves when the pipeline stops on its own: `Ok` when the source ran out, the
+    /// source's error when it failed; pending while it runs. Cancel-safe.
+    pub async fn finished(&mut self) -> Result<()> {
+        let Some(rx) = self.outcome.as_mut() else {
+            return std::future::pending().await;
+        };
+        let outcome = rx
+            .await
+            .unwrap_or_else(|_| Err(anyhow!("scanner thread panicked")));
+        self.outcome = None;
+        outcome
     }
 }
 
 impl Drop for Scanner {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+        drop(self.stop.take());
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
     }
 }
 
+/// Runs until the source ends or fails, or `stop` is disconnected. A source blocked in
+/// `next_sweep` is not interrupted; the stop takes effect when it returns.
 fn run(
     mut source: impl SweepSource,
     mut detector: Detector,
     hub: &Hub,
     pace: Option<Duration>,
-    stop: &AtomicBool,
-) {
+    stop: &mpsc::Receiver<()>,
+) -> Result<()> {
     let mut next = Instant::now();
     let mut seq = 0;
-    while !stop.load(Ordering::Relaxed) {
+    loop {
+        let now = Instant::now();
+        let wait = match pace {
+            Some(_) => next.saturating_duration_since(now),
+            None => Duration::ZERO,
+        };
+        // Sleeps until the next sweep is due, but wakes at once when stopped.
+        match stop.recv_timeout(wait) {
+            Err(RecvTimeoutError::Timeout) => {}
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => return Ok(()),
+        }
         if let Some(period) = pace {
-            let now = Instant::now();
-            if next > now {
-                thread::sleep(next - now);
-            }
             // A late sweep does not cause a burst of catch-up sweeps.
             next = next.max(now) + period;
         }
-        let sweep = match source.next_sweep() {
-            Ok(Some(sweep)) => sweep,
-            Ok(None) => {
-                tracing::info!(sweeps = seq, "sweep source finished");
-                return;
-            }
-            Err(e) => {
-                tracing::error!("sweep source failed: {e:#}");
-                return;
-            }
+        let Some(sweep) = source.next_sweep()? else {
+            tracing::info!(sweeps = seq, "sweep source finished");
+            return Ok(());
         };
         let report = detector.process(&sweep);
         hub.publish(seq, &sweep, report);
@@ -159,7 +172,7 @@ fn run(
 mod tests {
     use std::collections::VecDeque;
 
-    use anyhow::{Result, bail};
+    use anyhow::bail;
 
     use super::*;
     use crate::detect::DetectorConfig;
@@ -185,36 +198,28 @@ mod tests {
         }
     }
 
-    fn quiet_sweeps(n: u64) -> VecDeque<Sweep> {
-        (0..n)
+    fn spawn(sweeps: u64, fail_at_end: bool, hub: &Arc<Hub>, pace: Option<Duration>) -> Scanner {
+        let sweeps = (0..sweeps)
             .map(|i| Sweep {
                 t_ms: i * 100,
                 power_dbm: vec![-96.0; Band::ISM_2G4.bins],
             })
-            .collect()
-    }
-
-    fn run_to_end(source: Fixed, hub: &Arc<Hub>) {
+            .collect();
         let det = Detector::new(DetectorConfig::default(), Band::ISM_2G4);
-        let scanner = Scanner::spawn(source, det, hub.clone(), None).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !scanner.is_finished() {
-            assert!(Instant::now() < deadline, "scanner did not stop");
-            thread::sleep(Duration::from_millis(5));
-        }
+        Scanner::spawn(Fixed { sweeps, fail_at_end }, det, hub.clone(), pace).unwrap()
     }
 
-    #[test]
-    fn publishes_every_sweep_and_stops_at_the_end_of_the_source() {
+    async fn finish(scanner: &mut Scanner) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(5), scanner.finished())
+            .await
+            .expect("scanner did not stop")
+    }
+
+    #[tokio::test]
+    async fn publishes_every_sweep_and_reports_the_end_of_the_source() {
         let hub = Arc::new(Hub::default());
         let mut rx = hub.subscribe();
-        run_to_end(
-            Fixed {
-                sweeps: quiet_sweeps(3),
-                fail_at_end: false,
-            },
-            &hub,
-        );
+        finish(&mut spawn(3, false, &hub, None)).await.unwrap();
         assert_eq!(hub.snapshot().frames, 3);
         for seq in 0..3 {
             let frame: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
@@ -224,32 +229,43 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
-    #[test]
-    fn a_failing_source_stops_the_pipeline() {
+    #[tokio::test]
+    async fn a_failing_source_is_reported() {
         let hub = Arc::new(Hub::default());
-        run_to_end(
-            Fixed {
-                sweeps: quiet_sweeps(2),
-                fail_at_end: true,
-            },
-            &hub,
-        );
+        let err = finish(&mut spawn(2, true, &hub, None)).await.unwrap_err();
+        assert_eq!(err.to_string(), "device unplugged");
         assert_eq!(hub.snapshot().frames, 2);
     }
 
     #[test]
     fn pacing_limits_the_sweep_rate() {
         let hub = Arc::new(Hub::default());
-        let det = Detector::new(DetectorConfig::default(), Band::ISM_2G4);
-        let source = Fixed {
-            sweeps: quiet_sweeps(1000),
-            fail_at_end: false,
-        };
-        let scanner = Scanner::spawn(source, det, hub.clone(), Some(Duration::from_millis(20))).unwrap();
-        thread::sleep(Duration::from_millis(210));
+        let start = Instant::now();
+        let scanner = spawn(1000, false, &hub, Some(Duration::from_millis(20)));
+        thread::sleep(Duration::from_millis(200));
         drop(scanner);
+        let elapsed = start.elapsed();
         let frames = hub.snapshot().frames;
-        // 1 immediately + one per 20 ms; generous bounds for a loaded CI machine.
-        assert!((5..=12).contains(&frames), "{frames} frames in 210 ms");
+        // One at once, then one per 20 ms of however long the test really took.
+        let most = elapsed.as_millis() / 20 + 1;
+        assert!(
+            frames >= 5 && u128::from(frames) <= most,
+            "{frames} frames in {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn dropping_wakes_a_waiting_scanner_at_once() {
+        let hub = Arc::new(Hub::default());
+        let scanner = spawn(1000, false, &hub, Some(Duration::from_secs(10)));
+        thread::sleep(Duration::from_millis(50));
+        let start = Instant::now();
+        drop(scanner);
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "stop took {:?}",
+            start.elapsed()
+        );
+        assert_eq!(hub.snapshot().frames, 1, "no sweep after the stop");
     }
 }

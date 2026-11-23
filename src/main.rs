@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use rf_watch::detect::{Detector, DetectorConfig};
 use rf_watch::scanner::{Hub, Scanner};
@@ -46,7 +46,7 @@ struct Args {
     #[arg(long)]
     no_mdns: bool,
     /// Replay a `hackrf_sweep` / `rtl_power` CSV capture of the 2.4 GHz band instead of
-    /// simulating, at --fps sweeps per second
+    /// simulating, at --fps sweeps per second; exits at the end of the file
     #[arg(long, value_name = "CSV", conflicts_with_all = ["scenario", "seed"])]
     input: Option<PathBuf>,
 }
@@ -70,7 +70,7 @@ async fn main() -> Result<()> {
     let hub = Arc::new(Hub::default());
     let detector = Detector::new(DetectorConfig::default(), band);
     let pace = Duration::from_secs(1) / fps;
-    let scanner = Scanner::spawn(source, detector, hub.clone(), Some(pace))?;
+    let mut scanner = Scanner::spawn(source, detector, hub.clone(), Some(pace))?;
     let state = server::AppState::new(&args.name, band, fps, hub);
 
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
@@ -92,13 +92,20 @@ async fn main() -> Result<()> {
     };
 
     tracing::info!("UI on http://localhost:{port}  (stream: /ws, status: /api/status)");
+    // Runs until Ctrl-C or until the source ends (end of a capture) or fails.
+    let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel();
+    let shutdown = async move {
+        let outcome = tokio::select! {
+            _ = tokio::signal::ctrl_c() => Ok(()),
+            outcome = scanner.finished() => outcome,
+        };
+        drop(scanner);
+        let _ = outcome_tx.send(outcome);
+    };
     axum::serve(listener, server::app(state))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
+        .with_graceful_shutdown(shutdown)
         .await?;
-    drop(scanner);
-    Ok(())
+    outcome_rx.await.unwrap_or(Ok(())).context("sweep source failed")
 }
 
 fn simulator(args: &Args, fps: u32) -> Simulator {
