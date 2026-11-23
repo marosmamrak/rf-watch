@@ -4,18 +4,21 @@
 use futures_util::StreamExt;
 use rf_watch::detect::{Detector, DetectorConfig};
 use rf_watch::server::{AppState, app, run_scanner};
-use rf_watch::sim::{BINS, Scenario, Simulator};
+use rf_watch::source::SweepSource;
+use rf_watch::source::sim::{Scenario, Simulator};
 use serde_json::Value;
 use tokio::time::{Duration, timeout};
 
 #[tokio::test]
 async fn streams_hello_then_frames_with_a_detection() {
     let fps = 50;
-    let state = AppState::new("it-node", fps);
+    let source = Simulator::new(5, Scenario::drone(), fps);
+    let band = source.band();
+    let state = AppState::new("it-node", band, fps);
     tokio::spawn(run_scanner(
         state.clone(),
-        Simulator::new(5, Scenario::drone(), fps),
-        Detector::new(DetectorConfig::default()),
+        source,
+        Detector::new(DetectorConfig::default(), band),
         fps,
     ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -37,13 +40,13 @@ async fn streams_hello_then_frames_with_a_detection() {
     let hello = next().await;
     assert_eq!(hello["type"], "hello");
     assert_eq!(hello["device"], "it-node");
-    assert_eq!(hello["band"]["bins"], BINS);
+    assert_eq!(hello["band"]["bins"], band.bins);
 
     let mut detected = false;
     for _ in 0..100 {
         let frame = next().await;
         assert_eq!(frame["type"], "frame");
-        assert_eq!(frame["power_dbm"].as_array().unwrap().len(), BINS);
+        assert_eq!(frame["power_dbm"].as_array().unwrap().len(), band.bins);
         if frame["tracks"]
             .as_array()
             .unwrap()
