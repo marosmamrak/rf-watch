@@ -174,7 +174,8 @@ JVM unit tests (`app/src/test`):
 
 | Test | Covers |
 |---|---|
-| `ProtocolTest` | `hello` / `frame` parsing as sent by the Rust server, unknown fields and kinds, malformed messages, `drone_detected` rule. |
+| `ProtocolContractTest` | Parses the node's own sample messages (`protocol/` at the repo root, generated from `src/protocol.rs`); the hand-written test JSON keeps the node's keys. |
+| `ProtocolTest` | `hello` / `frame` parsing, unknown fields and kinds, malformed messages, `drone_detected` rule. |
 | `MonitorStateTest` | Connection state machine, stale data cleared on disconnect, track ordering, one alert per new drone track, backoff. |
 | `NodeAddressTest` | Manual `host:port` parsing (default port, scheme, IPv6). |
 | `CarSummaryTest` | Car layout stays refresh-compatible; status and emitter rows. |

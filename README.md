@@ -6,15 +6,21 @@ other background traffic, and streams spectrum, waterfall and detections over We
 to an embedded **Svelte** UI. The node advertises itself on the LAN over **mDNS**, so a
 mobile client can find it without an IP address.
 
-The RF front end is **simulated** (no SDR needed); the detector only sees power spectra,
-the same input it would get from an `rtl_power` / HackRF sweep.
+The RF front end is **simulated** (no SDR needed), or a `hackrf_sweep` / `rtl_power` CSV
+capture is **replayed**; the detector only sees power spectra, so it does not know which.
 
 ```
- Simulator ──sweeps──▶ Detector ──report──▶ broadcast ──▶ /ws  (JSON frames, 10 Hz)
- (sim.rs)             (detect.rs)          (server.rs)    /api/status
-                                                          /     (embedded Svelte UI)
+           scanner thread (scanner.rs)                          async (server/)
+ ┌──────────────────────────────────────────────────────┐
+ SweepSource ──Sweep──▶ Detector ──Report──▶ Hub ─broadcast─▶ /ws         JSON frames
+ sim | CSV replay       segment → wideband        └─watch──▶ /api/status
+ (source/)              → fhss  (detect/)                    /            embedded Svelte UI
  mDNS: _rfwatch._tcp.local.  (mdns.rs)
 ```
+
+Reading a front end blocks and detection is CPU work, so the pipeline runs on its own
+thread; the network side only sees the `Hub` (a broadcast channel of serialized frames and
+a watch channel with the latest snapshot).
 
 ## Detection
 
@@ -30,6 +36,9 @@ the same input it would get from an `rtl_power` / HackRF sweep.
    below that, so a weak stretch mid-flight does not flap lost/detected. Lost tracks stay
    listed for 10 s.
 
+Every threshold, weight and timeout above is a field of `DetectorConfig` /
+`WidebandConfig` / `FhssConfig`, with the values above as defaults.
+
 The `demo` scenario loops every 60 s: background traffic, a drone flies in at 8 s (signal
 rises), passes and leaves at 40 s.
 
@@ -44,7 +53,22 @@ cargo run --release
 ```
 
 Options: `--scenario demo|quiet|drone`, `--fps 10`, `--name rf-watch`, `--listen 0.0.0.0:8787`,
-`--seed N`, `--no-mdns`. Logs via `RUST_LOG=debug`.
+`--seed N`, `--no-mdns`, `--input capture.csv`. Logs via `RUST_LOG=debug`.
+
+### Replaying a capture
+
+```bash
+hackrf_sweep -f 2400:2484 -w 500000 -N 600 > capture.csv
+cargo run --release -- --input capture.csv
+```
+
+`--input` reads the CSV layout shared by `hackrf_sweep` and `rtl_power`
+(`date, time, hz_low, hz_high, hz_bin_width, num_samples, dB...`) and plays it back at
+`--fps`. Lines are grouped into sweeps by frequency (a line starting at or below the first
+frequency of the current sweep begins the next one, so `hackrf_sweep`'s interleaved
+slices work), each sweep is resampled onto the 2.4 GHz band (strongest capture bin per
+band bin; uncovered bins get the sweep's median), and sweep times come from the file.
+When the file ends, the node keeps serving the last state.
 
 UI development with hot reload (proxies `/ws` and `/api` to the Rust server on :8787):
 
@@ -64,6 +88,18 @@ avahi-browse -r _rfwatch._tcp  # Linux
 ```
 
 ## Protocol
+
+[`src/protocol.rs`](src/protocol.rs) is the single definition of the wire format. From it,
+`cargo test` checks two generated files and fails if either is stale
+(`UPDATE_PROTOCOL=1 cargo test` regenerates them):
+
+- [`web/src/lib/protocol.gen.ts`](web/src/lib/protocol.gen.ts): the UI's TypeScript types
+  (ts-rs), so a renamed field fails `svelte-check` wherever the UI uses it;
+- [`protocol/*.json`](protocol/): sample `hello`, `frame` and status messages, which the
+  web and Android tests parse.
+
+Domain types are converted at that boundary, so the detector can change without changing
+what clients see.
 
 `GET /ws` — first message `hello`, then one `frame` per sweep:
 
@@ -108,27 +144,54 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 ## Tests
 
 ```bash
-cargo test                  # simulator, detector (false alarms, detection latency,
-                            # track lifecycle), HTTP, WebSocket end to end
+cargo test                  # see below
 cd web && npm test && npm run check
+cd android && ./gradlew test
 ```
+
+| Where | What |
+|---|---|
+| `src/detect/` | The detection rules on hand-built sweeps (flat noise + rectangles), independent of the simulator: reporting after n hits, release and drop timing, hysteresis in both directions, few-channel or sparse traffic is not a link, ordering. |
+| `src/source/csv.rs` | Grouping interleaved lines, fine and coarse resampling, uncovered bins, midnight, errors with line numbers. |
+| `src/scanner.rs`, `src/server/` | End of source, failing source, pacing; HTTP routes. |
+| `src/protocol.rs` | Frame building, and that the generated TS types and samples are current. |
+| `tests/scenarios.rs` | Simulator → detector end to end: no false alarm, detection latency, no flapping over 40 seeds. |
+| `tests/replay.rs` | The simulator recorded as a `hackrf_sweep` CSV replays with identical detections. |
+| `tests/websocket.rs` | Server on a real port, `hello` then frames with a detection. |
 
 CI (`.github/workflows/ci.yml`) runs fmt, clippy, tests and both builds, plus the Android
 unit tests, lint and debug APK.
+
+## Validation: what is and is not shown
+
+- The detection rules are pinned by unit tests on hand-built input, and the simulator
+  scenarios check that the whole chain fits together.
+- **Nothing here is validated on real RF.** The simulator was written together with the
+  detector, so passing scenarios shows consistency, not field performance. The defaults
+  assume about 10 sweeps/s and a hop set like the simulated one (50 channels 1.5 MHz
+  apart, about 4 bursts per sweep). Real links (other hop rates, dwell times, bandwidths)
+  and real front ends (sweep rate, bin width, AGC, spurs) need recorded captures and
+  retuning; `--input` is the way in. The CSV reader is tested on synthetic files in the
+  documented format, not yet on a real capture.
 
 ## Layout
 
 | Path | Role |
 |---|---|
-| `src/sim.rs` | Simulated sweeps: noise, bursty Wi-Fi, blips, hopping control link. |
-| `src/detect.rs` | Noise floor, segmentation, wideband tracking, FHSS detection. |
-| `src/server.rs` | Scanner loop, broadcast, axum routes, embedded UI. |
+| `src/spectrum.rs` | `Band` geometry and `Sweep`, the input everything downstream works on. |
+| `src/source/` | `SweepSource`; `sim.rs` simulated sweeps, `csv.rs` capture replay. |
+| `src/detect/` | `segment.rs` noise floor and segmentation, `wideband.rs` tracker, `fhss.rs` hop-set detector; `mod.rs` merges them into a `Report`. |
+| `src/scanner.rs` | Pipeline thread and `Hub`. |
+| `src/server/` | Routes and `/api/status`, `/ws` client loop, embedded UI. |
+| `src/protocol.rs` | Wire types; source of the generated TS types and sample messages. |
 | `src/mdns.rs` | `_rfwatch._tcp` advertisement. |
-| `src/protocol.rs` | JSON messages. |
-| `web/src/lib/` | Connection with reconnect, spectrum, waterfall, emitter list. |
+| `protocol/` | Generated sample messages, parsed by the web and Android tests. |
+| `web/src/lib/` | Connection with reconnect, spectrum, waterfall, emitter list; `protocol.gen.ts` is generated. |
 | `android/` | Android client: NSD discovery, WebView + native alerts, foreground service, Android Auto. |
 
 ## Ideas
 
-- Real input: parse `rtl_power` / `hackrf_sweep` CSV as a second sweep source.
+- Validate and retune on real captures.
+- Live input: pipe `hackrf_sweep` into the CSV reader (it takes any reader; a live source
+  needs no pacing).
 - 5.8 GHz band and video-downlink classification.
