@@ -85,7 +85,7 @@ pub struct Simulator {
     rng: StdRng,
     scenario: Scenario,
     frame: u64,
-    frame_ms: u64,
+    fps: u64,
 }
 
 impl Simulator {
@@ -95,7 +95,7 @@ impl Simulator {
             rng: StdRng::seed_from_u64(seed),
             scenario,
             frame: 0,
-            frame_ms: 1000 / u64::from(fps.max(1)),
+            fps: u64::from(fps.max(1)),
         }
     }
 
@@ -109,7 +109,9 @@ impl Simulator {
 
     /// Generates the next sweep; simulated time advances by one frame per call.
     pub fn generate(&mut self) -> Sweep {
-        let t_ms = self.frame * self.frame_ms;
+        // From the frame count rather than a whole-ms frame period, so time keeps pace with
+        // the scanner at any fps (1000 / fps truncates: 0 ms per frame above 1000 fps).
+        let t_ms = self.frame * 1000 / self.fps;
         self.frame += 1;
         let t = t_ms as f32 / 1000.0;
 
@@ -205,6 +207,16 @@ mod tests {
         let b = sim.generate();
         assert_eq!(a.power_dbm.len(), sim.band().bins);
         assert_eq!(b.t_ms - a.t_ms, 100);
+    }
+
+    #[test]
+    fn time_keeps_pace_at_any_rate() {
+        // 1000 / fps would be 333 ms per frame at 3 fps (drifting) and 0 above 1000 fps.
+        for (fps, frames, ms) in [(3, 3, 1_000), (7, 70, 10_000), (2_000, 2_000, 1_000)] {
+            let mut sim = Simulator::new(1, Scenario::noise_only(), fps);
+            let t = (0..=frames).map(|_| sim.generate().t_ms).last().unwrap();
+            assert_eq!(t, ms, "{fps} fps");
+        }
     }
 
     #[test]
